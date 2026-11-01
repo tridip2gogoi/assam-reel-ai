@@ -3,9 +3,10 @@ import streamlit as st
 import numpy as np
 import tempfile
 import os
+import shutil
 import traceback
 
-from pathlib import Path
+from io import BytesIO
 from PIL import Image, ImageFilter
 from moviepy import ImageClip, AudioFileClip, CompositeVideoClip
 
@@ -82,36 +83,35 @@ def make_reel(photo_data, song_data):
 
     temp_dir = tempfile.mkdtemp(prefix="assam_reel_")
 
-    photo_path = os.path.join(temp_dir, "input_photo.jpg")
-    audio_path = os.path.join(temp_dir, "input_audio")
+    audio_path = os.path.join(temp_dir, "input_audio.mp3")
     output_path = os.path.join(temp_dir, "output_reel.mp4")
 
-    clips = []
+    audio = None
+    background_clip = None
+    base = None
+    animated = None
+    video = None
+    final_video = None
 
     try:
 
-        # Validate generated paths
-        for file_path in [photo_path, audio_path, output_path]:
-            if "\x00" in file_path:
-                raise ValueError("Invalid temporary file path.")
-
-        # Save uploaded photo
+        # Read uploaded photo from bytes
         image = Image.open(
-            photo_data
+            BytesIO(photo_data)
         ).convert("RGB")
 
-        image.save(photo_path, format="JPEG")
-
-        # Save uploaded audio
+        # Save uploaded audio bytes
         with open(audio_path, "wb") as file:
             file.write(song_data)
+
+        if not os.path.isfile(audio_path):
+            raise ValueError("Audio file could not be saved.")
 
         if os.path.getsize(audio_path) == 0:
             raise ValueError("Uploaded audio file is empty.")
 
         # Read audio
-        audio = AudioFileClip(str(Path(audio_path).resolve()))
-        clips.append(audio)
+        audio = AudioFileClip(audio_path)
 
         duration = min(
             float(requested_duration),
@@ -119,23 +119,23 @@ def make_reel(photo_data, song_data):
         )
 
         if duration <= 0:
-            raise ValueError("Audio duration is invalid.")
+            raise ValueError("Invalid audio duration.")
 
         audio = audio.subclipped(0, duration)
 
         # Create vertical background
-        background = image.resize(
+        bg = image.resize(
             (720, 1280),
             Image.Resampling.LANCZOS
         )
 
         if background_style == "Blur Background":
-            background = background.filter(
+            bg = bg.filter(
                 ImageFilter.GaussianBlur(28)
             )
 
         elif background_style == "Dreamy Background":
-            background = background.filter(
+            bg = bg.filter(
                 ImageFilter.GaussianBlur(12)
             )
 
@@ -160,19 +160,15 @@ def make_reel(photo_data, song_data):
             (left, top, left + 720, top + 1280)
         )
 
-        # Background clip
+        # Background video clip
         background_clip = ImageClip(
-            np.array(background)
+            np.array(bg)
         ).with_duration(duration)
-
-        clips.append(background_clip)
 
         # Main photo clip
         base = ImageClip(
             np.array(foreground)
         ).with_duration(duration)
-
-        clips.append(base)
 
         # Camera effects
         if effect == "Zoom In":
@@ -205,18 +201,14 @@ def make_reel(photo_data, song_data):
                 )
             )
 
-        clips.append(animated)
-
-        # Combine video and audio
+        # Combine video clips
         video = CompositeVideoClip(
             [background_clip, animated],
             size=(720, 1280)
         ).with_duration(duration)
 
-        clips.append(video)
-
+        # Add audio
         final_video = video.with_audio(audio)
-        clips.append(final_video)
 
         # Export MP4
         final_video.write_videofile(
@@ -229,32 +221,39 @@ def make_reel(photo_data, song_data):
         )
 
         if not os.path.isfile(output_path):
-            raise RuntimeError("MP4 file was not created.")
+            raise RuntimeError("Video export failed.")
 
         with open(output_path, "rb") as file:
-            result = file.read()
+            video_bytes = file.read()
 
-        if not result:
+        if not video_bytes:
             raise RuntimeError("Generated video is empty.")
 
-        return result, duration
+        return video_bytes, duration
 
     finally:
 
-        # Close clips
-        seen = set()
+        # Close video clips
+        for clip in [
+            final_video,
+            video,
+            animated,
+            base,
+            background_clip,
+            audio
+        ]:
 
-        for clip in reversed(clips):
-            if id(clip) not in seen:
-                seen.add(id(clip))
+            if clip is not None:
                 try:
                     clip.close()
                 except Exception:
                     pass
 
         # Remove temporary files
-        import shutil
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        shutil.rmtree(
+            temp_dir,
+            ignore_errors=True
+        )
 
 
 # ---------------- GENERATE BUTTON ----------------
@@ -297,7 +296,7 @@ if st.button(
                 width="stretch"
             )
 
-        except Exception as error:
+        except Exception:
 
             st.error("Reel generation failed.")
 
