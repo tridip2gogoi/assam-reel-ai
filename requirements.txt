@@ -2,3 +2,4 @@ streamlit
 fal-client
 moviepy
 pillow
+requests
