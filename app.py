@@ -1,10 +1,16 @@
+
 import streamlit as st
 import numpy as np
 import tempfile
 import os
+import traceback
 
+from pathlib import Path
 from PIL import Image, ImageFilter
 from moviepy import ImageClip, AudioFileClip, CompositeVideoClip
+
+
+# ---------------- PAGE SETTINGS ----------------
 
 st.set_page_config(
     page_title="Assam Reel AI",
@@ -16,6 +22,9 @@ st.title("🎬 Assam Reel AI")
 st.caption("Create Your Cinematic Reel")
 
 st.divider()
+
+
+# ---------------- USER INPUT ----------------
 
 photo = st.file_uploader(
     "Upload Your Photo",
@@ -32,14 +41,16 @@ duration_option = st.selectbox(
     ["30 Seconds", "1 Minute"]
 )
 
-requested_duration = 30 if duration_option == "30 Seconds" else 60
+requested_duration = (
+    30 if duration_option == "30 Seconds" else 60
+)
 
 effect = st.selectbox(
     "Cinematic Camera Effect",
     ["Zoom In", "Zoom Out", "Pan Left", "Pan Right"]
 )
 
-background = st.selectbox(
+background_style = st.selectbox(
     "Background Style",
     ["Natural", "Blur Background", "Dreamy Background"]
 )
@@ -49,49 +60,96 @@ mood = st.selectbox(
     ["Bihu", "Romantic", "Emotional", "Happy", "Kathak", "Cinematic"]
 )
 
+
+# ---------------- PREVIEW ----------------
+
 if photo:
-    st.image(photo, caption="Your Photo", use_container_width=True)
+    st.image(
+        photo,
+        caption="Your Photo",
+        width="stretch"
+    )
 
 if song:
     st.audio(song)
 
 st.write("Video Format: 9:16 Vertical | 720 × 1280")
 
-def make_reel(photo_bytes, song_bytes):
 
-    temp_files = []
-    audio = None
-    video = None
-    final = None
+# ---------------- VIDEO GENERATOR ----------------
+
+def make_reel(photo_data, song_data):
+
+    temp_dir = tempfile.mkdtemp(prefix="assam_reel_")
+
+    photo_path = os.path.join(temp_dir, "input_photo.jpg")
+    audio_path = os.path.join(temp_dir, "input_audio")
+    output_path = os.path.join(temp_dir, "output_reel.mp4")
+
+    clips = []
 
     try:
-        image = Image.open(photo_bytes).convert("RGB")
+
+        # Validate generated paths
+        for file_path in [photo_path, audio_path, output_path]:
+            if "\x00" in file_path:
+                raise ValueError("Invalid temporary file path.")
+
+        # Save uploaded photo
+        image = Image.open(
+            photo_data
+        ).convert("RGB")
+
+        image.save(photo_path, format="JPEG")
+
+        # Save uploaded audio
+        with open(audio_path, "wb") as file:
+            file.write(song_data)
+
+        if os.path.getsize(audio_path) == 0:
+            raise ValueError("Uploaded audio file is empty.")
+
+        # Read audio
+        audio = AudioFileClip(str(Path(audio_path).resolve()))
+        clips.append(audio)
+
+        duration = min(
+            float(requested_duration),
+            float(audio.duration)
+        )
+
+        if duration <= 0:
+            raise ValueError("Audio duration is invalid.")
+
+        audio = audio.subclipped(0, duration)
 
         # Create vertical background
-        bg = image.resize(
+        background = image.resize(
             (720, 1280),
             Image.Resampling.LANCZOS
         )
 
-        if background == "Blur Background":
-            bg = bg.filter(ImageFilter.GaussianBlur(28))
+        if background_style == "Blur Background":
+            background = background.filter(
+                ImageFilter.GaussianBlur(28)
+            )
 
-        elif background == "Dreamy Background":
-            bg = bg.filter(ImageFilter.GaussianBlur(12))
+        elif background_style == "Dreamy Background":
+            background = background.filter(
+                ImageFilter.GaussianBlur(12)
+            )
 
-        # Fit photo into vertical frame
+        # Fit main photo into vertical frame
         ratio = max(
             720 / image.width,
             1280 / image.height
         )
 
-        new_size = (
-            int(image.width * ratio),
-            int(image.height * ratio)
-        )
+        new_width = int(image.width * ratio)
+        new_height = int(image.height * ratio)
 
         foreground = image.resize(
-            new_size,
+            (new_width, new_height),
             Image.Resampling.LANCZOS
         )
 
@@ -102,81 +160,66 @@ def make_reel(photo_bytes, song_bytes):
             (left, top, left + 720, top + 1280)
         )
 
-        # Save temporary files
-        bg_file = tempfile.NamedTemporaryFile(
-            suffix=".jpg", delete=False
-        )
-        bg_path = bg_file.name
-        bg_file.close()
+        # Background clip
+        background_clip = ImageClip(
+            np.array(background)
+        ).with_duration(duration)
 
-        song_file = tempfile.NamedTemporaryFile(
-            suffix=".mp3", delete=False
-        )
-        song_path = song_file.name
-        song_file.close()
+        clips.append(background_clip)
 
-        output_file = tempfile.NamedTemporaryFile(
-            suffix=".mp4", delete=False
-        )
-        output_path = output_file.name
-        output_file.close()
-
-        temp_files.extend([bg_path, song_path, output_path])
-
-        bg.save(bg_path)
-
-        with open(song_path, "wb") as f:
-            f.write(song_bytes)
-
-        # Read audio duration
-        st.write("DEBUG: Audio file path:", repr(song_path))
-        st.write("DEBUG: Audio file exists:", os.path.exists(song_path))
-        audio = AudioFileClip(str(song_path))
-
-        duration = min(requested_duration, audio.duration)
-
-        if duration <= 0:
-            raise ValueError("The uploaded song has no usable audio.")
-
-        audio = audio.subclipped(0, duration)
-
-        # Create animated photo
+        # Main photo clip
         base = ImageClip(
             np.array(foreground)
         ).with_duration(duration)
 
+        clips.append(base)
+
+        # Camera effects
         if effect == "Zoom In":
+
             animated = base.resized(
-                lambda t: 1 + 0.12 * t / duration
+                lambda t: 1.0 + 0.12 * t / duration
             ).with_position("center")
 
         elif effect == "Zoom Out":
+
             animated = base.resized(
                 lambda t: 1.12 - 0.12 * t / duration
             ).with_position("center")
 
         elif effect == "Pan Left":
-            animated = base.with_position(
-                lambda t: (-40 * t / duration, 0)
+
+            animated = base.resized(1.08).with_position(
+                lambda t: (
+                    -38 * t / duration,
+                    -51 * t / duration
+                )
             )
 
         else:
-            animated = base.with_position(
-                lambda t: (40 * t / duration, 0)
+
+            animated = base.resized(1.08).with_position(
+                lambda t: (
+                    -38 + 38 * t / duration,
+                    -51 + 51 * t / duration
+                )
             )
 
-        background_clip = ImageClip(
-            np.array(bg)
-        ).with_duration(duration)
+        clips.append(animated)
 
+        # Combine video and audio
         video = CompositeVideoClip(
             [background_clip, animated],
             size=(720, 1280)
-        )
+        ).with_duration(duration)
 
-        final = video.with_audio(audio)
+        clips.append(video)
 
-        final.write_videofile(
+        final_video = video.with_audio(audio)
+        clips.append(final_video)
+
+        # Export MP4
+        final_video.write_videofile(
             output_path,
             fps=24,
             codec="libx264",
@@ -185,35 +228,55 @@ def make_reel(photo_bytes, song_bytes):
             logger=None
         )
 
-        with open(output_path, "rb") as f:
-            video_bytes = f.read()
+        if not os.path.isfile(output_path):
+            raise RuntimeError("MP4 file was not created.")
 
-        return video_bytes, duration
+        with open(output_path, "rb") as file:
+            result = file.read()
+
+        if not result:
+            raise RuntimeError("Generated video is empty.")
+
+        return result, duration
 
     finally:
-        for clip in [final, video, audio]:
-            if clip is not None:
+
+        # Close clips
+        seen = set()
+
+        for clip in reversed(clips):
+            if id(clip) not in seen:
+                seen.add(id(clip))
                 try:
                     clip.close()
                 except Exception:
                     pass
 
-        for path in temp_files:
-            try:
-                if os.path.exists(path):
-                    os.remove(path)
-            except OSError:
-                pass
+        # Remove temporary files
+        import shutil
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-if st.button("✨ GENERATE MY REEL", use_container_width=True):
+# ---------------- GENERATE BUTTON ----------------
 
-    if not photo or not song:
-        st.warning("Please upload both Photo and Song.")
+if st.button(
+    "✨ GENERATE MY REEL",
+    width="stretch"
+):
+
+    if photo is None or song is None:
+
+        st.warning(
+            "Please upload both Photo and Song."
+        )
 
     else:
+
         try:
-            with st.spinner("Creating your cinematic reel..."):
+
+            with st.spinner(
+                "Creating your cinematic reel..."
+            ):
 
                 video_bytes, actual_duration = make_reel(
                     photo.getvalue(),
@@ -231,9 +294,14 @@ if st.button("✨ GENERATE MY REEL", use_container_width=True):
                 data=video_bytes,
                 file_name="Assam_Reel_AI.mp4",
                 mime="video/mp4",
-                use_container_width=True
+                width="stretch"
             )
 
         except Exception as error:
+
             st.error("Reel generation failed.")
-            st.code(str(error))
+
+            st.code(
+                traceback.format_exc(),
+                language="text"
+            )
