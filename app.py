@@ -129,7 +129,7 @@ def make_reel(photo_bytes, song_bytes):
             f.write(song_bytes)
 
         # Read audio duration
-        audio = AudioFileClip(song_path)
+        audio = AudioFileClip(str(song_path))
 
         duration = min(requested_duration, audio.duration)
 
