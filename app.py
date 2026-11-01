@@ -1,9 +1,15 @@
 
 import streamlit as st
-import fal_client
+import numpy as np
+import tempfile
 import os
-import base64
-import requests
+
+from PIL import Image, ImageFilter
+from moviepy import (
+    ImageClip,
+    AudioFileClip,
+    CompositeVideoClip
+)
 
 st.set_page_config(
     page_title="Assam Reel AI",
@@ -12,153 +18,243 @@ st.set_page_config(
 )
 
 st.title("🎬 Assam Reel AI")
-st.write("Realistic AI Dance & Cinematic Video")
+st.caption("Create Your Cinematic Reel for Free")
 
-# Secure API key
-try:
-    os.environ["FAL_KEY"] = st.secrets["FAL_KEY"]
-except Exception:
-    st.error("API key not found. Check Streamlit Secrets.")
-    st.stop()
+st.divider()
 
 photo = st.file_uploader(
-    "Upload your photo",
+    "Upload Your Photo",
     type=["jpg", "jpeg", "png"]
 )
 
 song = st.file_uploader(
-    "Upload Assamese song",
+    "Upload Your Assamese Song",
     type=["mp3", "wav", "m4a"]
 )
 
-motion = st.selectbox(
-    "Choose Motion Style",
+duration_option = st.selectbox(
+    "Select Reel Duration",
+    ["30 Seconds", "1 Minute"]
+)
+
+duration = 30 if duration_option == "30 Seconds" else 60
+
+effect = st.selectbox(
+    "Cinematic Camera Effect",
     [
-        "Bihu Dance",
-        "Kathak Dance",
+        "Zoom In",
+        "Zoom Out",
+        "Pan Left",
+        "Pan Right"
+    ]
+)
+
+background = st.selectbox(
+    "Background Style",
+    [
+        "Natural",
+        "Blur Background",
+        "Dreamy Background"
+    ]
+)
+
+mood = st.selectbox(
+    "Reel Theme",
+    [
+        "Bihu",
         "Romantic",
         "Emotional",
         "Happy",
-        "Cinematic Only"
+        "Kathak",
+        "Cinematic"
     ]
 )
-
-camera = st.selectbox(
-    "Camera Effect",
-    [
-        "Smooth cinematic camera movement",
-        "Slow zoom in",
-        "Slow zoom out",
-        "Gentle camera pan"
-    ]
-)
-
-mood_prompts = {
-    "Bihu Dance":
-        "Perform a joyful traditional Assamese Bihu dance, "
-        "natural graceful movements and festive energy.",
-
-    "Kathak Dance":
-        "Perform graceful classical Kathak dance movements "
-        "with elegant hand gestures and expressive posture.",
-
-    "Romantic":
-        "A gentle cinematic romantic expression, "
-        "soft natural movement and graceful gestures.",
-
-    "Emotional":
-        "A subtle emotional cinematic performance "
-        "with gentle expressive movement.",
-
-    "Happy":
-        "A cheerful happy expression with natural "
-        "body movement and joyful energy.",
-
-    "Cinematic Only":
-        "Remain natural with subtle realistic movement "
-        "and cinematic camera motion."
-}
 
 if photo:
-    st.image(photo, caption="Uploaded Photo",
+    st.image(photo, caption="Your Photo",
              use_container_width=True)
 
 if song:
     st.audio(song)
 
-st.info("Test generation: 5 seconds, 720p.")
+st.write("Video format: 9:16 Vertical | 720 × 1280")
 
-guardian_ok = st.checkbox(
-    "A parent/guardian has approved this paid AI generation."
-)
-
-if st.button("GENERATE TEST VIDEO", use_container_width=True):
-
-    if not guardian_ok:
-        st.warning("Please get parent/guardian approval first.")
-        st.stop()
-
-    if photo is None:
-        st.warning("Please upload a photo first.")
-        st.stop()
+def make_reel(photo_bytes, song_bytes):
+    temp_files = []
 
     try:
-        with st.spinner("AI is creating your video..."):
+        image = Image.open(
+            photo_bytes
+        ).convert("RGB")
 
-            image_data = base64.b64encode(
-                photo.getvalue()
-            ).decode("utf-8")
-
-            mime = photo.type or "image/jpeg"
-
-            image_url = (
-                f"data:{mime};base64,{image_data}"
-            )
-
-            prompt = (
-                "Create a realistic cinematic video based "
-                "on the uploaded person's appearance. "
-                + mood_prompts[motion]
-                + " "
-                + camera
-                + ". Preserve the person's facial identity, "
-                "clothing and natural proportions. "
-                "Smooth realistic motion, detailed background, "
-                "professional cinematic lighting, vertical video."
-            )
-
-            result = fal_client.subscribe(
-                "fal-ai/wan/v2.7/image-to-video",
-                arguments={
-                    "image_url": image_url,
-                    "prompt": prompt,
-                    "duration": 5,
-                    "resolution": "720p",
-                    "enable_safety_checker": True
-                }
-            )
-
-            video_url = result["video"]["url"]
-
-            video_response = requests.get(
-                video_url,
-                timeout=180
-            )
-            video_response.raise_for_status()
-
-            video_bytes = video_response.content
-
-        st.success("AI video created successfully!")
-        st.video(video_bytes)
-
-        st.download_button(
-            "Download Test Video",
-            data=video_bytes,
-            file_name="assam_reel_test.mp4",
-            mime="video/mp4",
-            use_container_width=True
+        # Prepare vertical background
+        bg = image.resize(
+            (720, 1280),
+            Image.Resampling.LANCZOS
         )
 
-    except Exception as e:
-        st.error("Video generation failed.")
-        st.caption(str(e))
+        if background == "Blur Background":
+            bg = bg.filter(
+                ImageFilter.GaussianBlur(28)
+            )
+
+        elif background == "Dreamy Background":
+            bg = bg.filter(
+                ImageFilter.GaussianBlur(12)
+            )
+
+        # Fit main photo to vertical frame
+        ratio = max(
+            720 / image.width,
+            1280 / image.height
+        )
+
+        new_size = (
+            int(image.width * ratio),
+            int(image.height * ratio)
+        )
+
+        foreground = image.resize(
+            new_size,
+            Image.Resampling.LANCZOS
+        )
+
+        left = (foreground.width - 720) // 2
+        top = (foreground.height - 1280) // 2
+
+        foreground = foreground.crop(
+            (left, top, left + 720, top + 1280)
+        )
+
+        bg_path = tempfile.NamedTemporaryFile(
+            suffix=".jpg", delete=False
+        ).name
+
+        song_path = tempfile.NamedTemporaryFile(
+            suffix=".mp3", delete=False
+        ).name
+
+        output_path = tempfile.NamedTemporaryFile(
+            suffix=".mp4", delete=False
+        ).name
+
+        temp_files.extend([
+            bg_path, song_path, output_path
+        ])
+
+        bg.save(bg_path)
+        with open(song_path, "wb") as f:
+            f.write(song_bytes)
+
+        # Animated photo
+        base = ImageClip(
+            np.array(foreground)
+        ).with_duration(duration)
+
+        if effect == "Zoom In":
+            animated = base.resized(
+                lambda t: 1 + 0.12 * t / duration
+            ).with_position("center")
+
+        elif effect == "Zoom Out":
+            animated = base.resized(
+                lambda t: 1.12 - 0.12 * t / duration
+            ).with_position("center")
+
+        elif effect == "Pan Left":
+            animated = base.with_position(
+                lambda t: (
+                    -40 * t / duration, 0
+                )
+            )
+
+        else:
+            animated = base.with_position(
+                lambda t: (
+                    40 * t / duration, 0
+                )
+            )
+
+        background_clip = ImageClip(
+            np.array(bg)
+        ).with_duration(duration)
+
+        video = CompositeVideoClip(
+            [background_clip, animated],
+            size=(720, 1280)
+        )
+
+        audio = AudioFileClip(song_path)
+
+        if audio.duration < duration:
+            audio.close()
+            video.close()
+            raise ValueError(
+                "Song is shorter than selected video duration."
+            )
+
+        audio = audio.subclipped(0, duration)
+
+        final = video.with_audio(audio)
+
+        final.write_videofile(
+            output_path,
+            fps=24,
+            codec="libx264",
+            audio_codec="aac",
+            preset="ultrafast",
+            logger=None
+        )
+
+        with open(output_path, "rb") as f:
+            video_bytes = f.read()
+
+        final.close()
+        audio.close()
+
+        return video_bytes
+
+    finally:
+        for path in temp_files:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass
+
+
+if st.button(
+    "✨ GENERATE MY REEL",
+    use_container_width=True
+):
+
+    if not photo or not song:
+        st.warning(
+            "Please upload both Photo and Song."
+        )
+
+    else:
+        try:
+            with st.spinner(
+                "Creating your cinematic reel..."
+            ):
+                video_bytes = make_reel(
+                    photo.getvalue(),
+                    song.getvalue()
+                )
+
+            st.success("Your Reel is ready!")
+
+            st.video(video_bytes)
+
+            st.download_button(
+                "⬇️ Download MP4 Reel",
+                data=video_bytes,
+                file_name="Assam_Reel_AI.mp4",
+                mime="video/mp4",
+                use_container_width=True
+            )
+
+        except Exception as error:
+            st.error("Reel generation failed.")
+            st.code(str(error))
